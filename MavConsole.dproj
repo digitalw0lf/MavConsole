@@ -68,8 +68,8 @@
         <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
-        <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
         <VerInfo_Locale>1033</VerInfo_Locale>
+        <Icon_MainIcon>MavConsole.ico</Icon_MainIcon>
         <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win64)'!=''">
@@ -99,6 +99,8 @@
     <PropertyGroup Condition="'$(Cfg_2_Win32)'!=''">
         <AppEnableRuntimeThemes>true</AppEnableRuntimeThemes>
         <AppDPIAwarenessMode>PerMonitor</AppDPIAwarenessMode>
+        <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
+        <VerInfo_Locale>1033</VerInfo_Locale>
     </PropertyGroup>
     <ItemGroup>
         <DelphiCompile Include="$(MainSource)">
@@ -130,10 +132,8 @@
                     <Source Name="MainSource">MavConsole.dpr</Source>
                 </Source>
                 <Excluded_Packages>
-                    <Excluded_Packages Name="$(BDSBIN)\bcboffice2k250.bpl">Embarcadero C++Builder Office 2000 Servers Package</Excluded_Packages>
-                    <Excluded_Packages Name="$(BDSBIN)\bcbofficexp250.bpl">Embarcadero C++Builder Office XP Servers Package</Excluded_Packages>
-                    <Excluded_Packages Name="$(BDSBIN)\dcloffice2k250.bpl">Microsoft Office 2000 Sample Automation Server Wrapper Components</Excluded_Packages>
-                    <Excluded_Packages Name="$(BDSBIN)\dclofficexp250.bpl">Microsoft Office XP Sample Automation Server Wrapper Components</Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\dcloffice2k270.bpl">Microsoft Office 2000 Sample Automation Server Wrapper Components</Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\dclofficexp270.bpl">Microsoft Office XP Sample Automation Server Wrapper Components</Excluded_Packages>
                 </Excluded_Packages>
             </Delphi.Personality>
             <Deployment Version="3">

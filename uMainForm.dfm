@@ -12,6 +12,7 @@ object MainForm: TMainForm
   Font.Style = []
   OldCreateOrder = False
   OnCreate = FormCreate
+  OnDestroy = FormDestroy
   OnShow = FormShow
   PixelsPerInch = 96
   TextHeight = 13
@@ -28,7 +29,7 @@ object MainForm: TMainForm
     Top = 97
     Width = 747
     Height = 531
-    ActivePage = TabConsole
+    ActivePage = TabFiles
     Align = alClient
     TabOrder = 0
     object TabConsole: TTabSheet
@@ -64,6 +65,7 @@ object MainForm: TMainForm
           Top = 8
           Width = 520
           Height = 21
+          AutoComplete = False
           Anchors = [akLeft, akTop, akRight]
           TabOrder = 0
           OnKeyDown = EditConsoleCommandKeyDown
@@ -99,6 +101,7 @@ object MainForm: TMainForm
         Width = 739
         Height = 378
         Align = alClient
+        HideSelection = False
         Indent = 19
         TabOrder = 0
         OnAdvancedCustomDrawItem = FilesTreeViewAdvancedCustomDrawItem
@@ -130,6 +133,15 @@ object MainForm: TMainForm
           TabOrder = 1
           OnClick = BtnFTPDownloadClick
         end
+        object BtnFTPDelete: TButton
+          Left = 177
+          Top = 8
+          Width = 75
+          Height = 25
+          Caption = 'Delete'
+          TabOrder = 2
+          OnClick = BtnFTPDeleteClick
+        end
       end
       object MemoFTPConsole: TRichEdit
         Left = 0
@@ -149,8 +161,39 @@ object MainForm: TMainForm
         Zoom = 100
       end
     end
+    object TabMavlinkInspector: TTabSheet
+      Caption = 'Mavlink Inspector'
+      ImageIndex = 3
+      ExplicitLeft = 0
+      ExplicitTop = 0
+      ExplicitWidth = 0
+      ExplicitHeight = 0
+      object ListView1: TListView
+        Left = 0
+        Top = 0
+        Width = 289
+        Height = 503
+        Align = alLeft
+        Columns = <
+          item
+            Caption = 'Message'
+            Width = 150
+          end
+          item
+            Caption = 'Rate'
+            Width = 100
+          end>
+        GridLines = True
+        HideSelection = False
+        ReadOnly = True
+        RowSelect = True
+        SortType = stText
+        TabOrder = 0
+        ViewStyle = vsReport
+      end
+    end
     object TabRawMavlink: TTabSheet
-      Caption = 'RawMavlink'
+      Caption = 'Raw Mavlink'
       ImageIndex = 2
       object MemoRawMavlink: TRichEdit
         Left = 0
@@ -239,6 +282,17 @@ object MainForm: TMainForm
           TabOrder = 4
           Text = '0'
           Visible = False
+        end
+        object CBRawMavlinkShowDecoded: TCheckBox
+          Left = 534
+          Top = 41
+          Width = 97
+          Height = 17
+          Anchors = [akTop, akRight]
+          Caption = 'Show decoded'
+          Checked = True
+          State = cbChecked
+          TabOrder = 5
         end
       end
     end
@@ -331,6 +385,43 @@ object MainForm: TMainForm
       ParentShowHint = False
       ShowHint = True
       OnClick = SpeedButton1Click
+    end
+    object ImgUDPServerInfo: TImage
+      Left = 392
+      Top = 38
+      Width = 16
+      Height = 16
+      AutoSize = True
+      Picture.Data = {
+        07544269746D617036030000424D360300000000000036000000280000001000
+        000010000000010018000000000000030000130B0000130B0000000000000000
+        000000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF00
+        00FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF00F8DE
+        C9D6BAA2B6845AAC7445AB7243B27E53D2B59CF8DEC900FF0000FF0000FF0000
+        FF0000FF0000FF0000FF00E7D5C6BA895FD7BBA3E9DACAECE0D1ECE0D1E8D8C8
+        D3B59CB07A4DE2CFBE00FF0000FF0000FF0000FF0000FF00EAD9CBBE8C62E7D5
+        C4E5D2BFC9A685B88E67B68A65C5A180E0CCBAE3D0BEAF7648E3D0C000FF0000
+        FF0000FF00F8DEC9C99D79EAD8C9E3CDBAC0946BBA8C62CFB094CFB094B7895F
+        B28761DAC0AAE4D1C0B68359F8DEC900FF0000FF00E6CFBCE4CCB9EAD6C5C799
+        71BF9066BF9066F7F1ECF6F0EAB7895FB7895FB58963E2CEBBD9BDA6D9BEA700
+        FF0000FF00D9B395EFE1D3D9B595C7986CC39569C19367BF9066BF9066BB8B63
+        B98A63B88A62CBA786EADCCCC2956F00FF0000FF00DAB393F2E4D9D1A57AC599
+        6BC4976AC49669FAF6F2F3EAE1C2956DBE8F65BE8F64C0956DEFE3D5C1906700
+        FF0000FF00E1BB9DF2E5DAD1A67ECC9D71C79A6CC5986BE2CCB6F8F3EEF6EEE8
+        D9BDA1C29468C59B71F0E2D6C7997100FF0000FF00EACAB0F3E5D9DFBB9ECFA0
+        75CD9E72F5EBE3E4CBB4E7D3BFFBF8F6E5D3BFC4986BD6B491EEE0D2D3AC8B00
+        FF0000FF00F5E4D6F4E3D4EFDCCDD5A87ED0A077FBF8F5FCF8F5FCF8F5FBF8F5
+        D1A881CFA47BEAD5C3EAD4C2E9D4C200FF0000FF00F8DEC9F1D3BBF6E9DDECD8
+        C6D7AC81DCBB9AF6ECE3F5ECE2E4C8AED2A77BE6CEBAF1E2D5DFBB9CF8DEC900
+        FF0000FF0000FF00F8DEC9F3D4BBF7EADFEEDED0E3C1A7D8AE89D7AC86DDBB9C
+        EBD6C7F3E6D9E4C1A3F8DEC900FF0000FF0000FF0000FF0000FF00F8DEC9F8DE
+        C9F9E9DCF6E8DDF3E5DAF3E5DAF5E7DCF5E4D6EDCDB4F8DEC900FF0000FF0000
+        FF0000FF0000FF0000FF0000FF00F8DEC9F8DEC9F8DEC9F6D9C1F5D7BFF5D9C3
+        F8DEC9F8DEC900FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF
+        0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000FF0000
+        FF00}
+      Transparent = True
+      OnMouseMove = ImgUDPServerInfoMouseMove
     end
     object EditDestAddr: TComboBox
       Left = 72
@@ -500,27 +591,28 @@ object MainForm: TMainForm
     BroadcastEnabled = True
     Port = 0
     Left = 100
-    Top = 123
+    Top = 203
   end
   object Timer1: TTimer
-    Interval = 100
+    Interval = 20
     OnTimer = Timer1Timer
     Left = 212
-    Top = 123
+    Top = 203
   end
   object IdUDPServer1: TIdUDPServer
     Bindings = <>
     DefaultPort = 0
     Left = 100
-    Top = 193
+    Top = 273
   end
   object SaveDialog1: TSaveDialog
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofEnableSizing]
     Left = 188
-    Top = 193
+    Top = 273
   end
   object HBTimer: TTimer
     OnTimer = HBTimerTimer
     Left = 296
-    Top = 128
+    Top = 208
   end
 end

@@ -6,7 +6,7 @@ uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.ComCtrls, Vcl.StdCtrls, Vcl.ExtCtrls,
   IdBaseComponent, IdComponent, IdUDPBase, IdUDPClient, IdGlobal, IdUDPServer,
-  IdSocketHandle, System.Math, System.StrUtils, Vcl.Buttons,
+  IdSocketHandle, System.Math, System.StrUtils, Vcl.Buttons, Generics.Collections,
 
   uMavlink, uRS485Protocol, uUtil, uLogFile;
 
@@ -16,6 +16,20 @@ type
     Path: string;
     Dir: Boolean;
     Size: Integer;
+  end;
+
+  TMavlinkInspectorItem = record
+    MessageCode: Integer;
+    LastRcvTime: Cardinal;
+    Interval: Double;  // Seconds
+  end;
+
+  TMavlinkInspector = class
+  public
+    Items: TArray<TMavlinkInspectorItem>;
+    constructor Create();
+    destructor Destroy(); override;
+    procedure PacketRecieved();
   end;
 
   TMainForm = class(TForm)
@@ -33,9 +47,18 @@ type
     ComboBox1: TComboBox;
     CBDroneID: TCheckBox;
     EditDroneID: TComboBox;
+    BtnFTPDelete: TButton;
+    ImgUDPServerInfo: TImage;
+    TabMavlinkInspector: TTabSheet;
+    ListView1: TListView;
+    CBRawMavlinkShowDecoded: TCheckBox;
     procedure SpeedButton1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure HBTimerTimer(Sender: TObject);
+    procedure BtnFTPDeleteClick(Sender: TObject);
+    procedure ImgUDPServerInfoMouseMove(Sender: TObject; Shift: TShiftState; X,
+      Y: Integer);
+    procedure FormDestroy(Sender: TObject);
   public type
     TConnType = (ctNone, ctUDPClient, ctUDPServer, ctCOMPort);
   published
@@ -110,8 +133,8 @@ type
     FTP_session: Byte;
     procedure AddLog(Memo: TRichEdit; Text: string; Color: TColor = clNone; MaxLines: Integer = -1);
     procedure ShowRawLog(Data: TBytes; Outgoing: Boolean);
-    procedure ProcessInputBytes(ConnType: TConnType; const Data; Size: integer);
-    procedure ProcessPacket(ConnType: TConnType; const Pkt: TBytes);
+    function ProcessInputBytes(ConnType: TConnType; const Data; Size: integer): Boolean;
+    function ProcessPacket(ConnType: TConnType; const Pkt: TBytes): Boolean;
     procedure Process_Serial_Control(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_Serial_Control);
     procedure Process_File_Transfer_Protocol(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
     procedure Process_FTP_Resp_ListDirectory(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
@@ -128,6 +151,7 @@ type
     { Public declarations }
     ComStream: THandleStream;
     LastRcvTime: array[TConnType] of Cardinal;
+    InspectorItems: TList<TMavlinkInspectorItem>;
     procedure RefreshComList();
     procedure EnsureConnected();
     function Connected(ConnType: TConnType): Boolean;
@@ -147,6 +171,8 @@ implementation
 
 const
   sLoadingFilesList = '<loading...>';
+
+  LogColors: array[Boolean] of tColor = (clBlack, clBlue);
 
 procedure TMainForm.AddLog(Memo: TRichEdit; Text: string; Color: TColor;
   MaxLines: Integer);
@@ -209,6 +235,31 @@ end;
 procedure TMainForm.Button2Click(Sender: TObject);
 begin
   MemoStatusText.Lines.Clear();
+end;
+
+procedure TMainForm.BtnFTPDeleteClick(Sender: TObject);
+var
+  FNode: TFileTreeNode;
+  Msg: TMavMsg_File_Transfer_protocol;
+  s: AnsiString;
+begin
+  if FilesTreeView.Selected = nil then Exit;
+  FNode := FilesTreeView.Selected as TFileTreeNode;
+
+  if Application.MessageBox(PChar('Delete ' + FNode.Path + ' ?'), 'Delete', MB_OKCANCEL) <> IDOK then Exit;
+
+  Msg := NewFTPPacket();
+  if FNode.Dir then
+    Msg.payload.opcode := MAV_FTP_RemoveDirectory
+  else
+    Msg.payload.opcode := MAV_FTP_RemoveFile;
+
+  s := AnsiString(FNode.Path);
+  Msg.payload.size := Length(s);
+  Move(s[1], Msg.payload.data[0], Length(s));
+
+  AddLog(MemoFTPConsole, 'Deleting ' + FNode.Path + '...');
+  Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
 end;
 
 procedure TMainForm.BtnFTPDownloadClick(Sender: TObject);
@@ -400,7 +451,14 @@ end;
 
 procedure TMainForm.FormCreate(Sender: TObject);
 begin
+  InspectorItems := TList<TMavlinkInspectorItem>.Create();
   IdUDPServer1.OnUDPRead:=IdUDPServer1UDPRead;
+  PageControl1.ActivePageIndex := 0;
+end;
+
+procedure TMainForm.FormDestroy(Sender: TObject);
+begin
+  InspectorItems.Free;
 end;
 
 procedure TMainForm.FormShow(Sender: TObject);
@@ -432,10 +490,18 @@ procedure TMainForm.IdUDPServer1UDPRead(AThread: TIdUDPListenerThread;
   const AData: TIdBytes; ABinding: TIdSocketHandle);
 begin
   if Application.Terminated then Exit;
-  PeerIP := ABinding.PeerIP;
-  PeerPort := ABinding.PeerPort;
-  //ProcessPacket(TBytes(AData));
-  ProcessInputBytes(ctUDPServer, AData[0], Length(AData));
+  if ProcessInputBytes(ctUDPServer, AData[0], Length(AData)) then
+  begin
+    PeerIP := ABinding.PeerIP;
+    PeerPort := ABinding.PeerPort;
+  end;
+end;
+
+procedure TMainForm.ImgUDPServerInfoMouseMove(Sender: TObject; Shift: TShiftState; X,
+  Y: Integer);
+begin
+  ImgUDPServerInfo.Hint := PeerIP + ':' + IntToStr(PeerPort);
+  ImgUDPServerInfo.ShowHint := True;
 end;
 
 function TMainForm.NewFTPPacket: TMavMsg_File_Transfer_protocol;
@@ -450,11 +516,12 @@ begin
   Result.payload.session := FTP_session;
 end;
 
-procedure TMainForm.ProcessInputBytes(ConnType: TConnType; const Data; Size: integer);
+function TMainForm.ProcessInputBytes(ConnType: TConnType; const Data; Size: integer): Boolean;
 var
   i, HdrSize, L: Integer;
   Pkt: TBytes;
 begin
+  Result := False;
   InputBuf := InputBuf + MakeBytes(Data, Size);
   while InputBuf <> nil do
   begin
@@ -472,7 +539,8 @@ begin
       begin
         Pkt := Copy(InputBuf, 0, HdrSize + L);
         Delete(InputBuf, 0, HdrSize + L);
-        ProcessPacket(ConnType, Pkt);
+        if ProcessPacket(ConnType, Pkt) then
+          Result := True;
       end
       else
         Break;
@@ -482,17 +550,18 @@ begin
   end;
 end;
 
-procedure TMainForm.ProcessPacket(ConnType: TConnType; const Pkt: TBytes);
+function TMainForm.ProcessPacket(ConnType: TConnType; const Pkt: TBytes): Boolean;
 var
   PayloadLength,
 //  PacketSequence,
   System_id,
-  Component_id,
-  MessageID: Byte;
+  Component_id: Byte;
+  MessageID: Integer;
   Payload: Pointer;
   Buf: array[0..255] of Byte;
-  id: Byte;
+  Full_id, Filter_Id: string;  // CompID:SysID
 begin
+  Result := False;
   if Pkt[0] = $FE then
   begin
     PayloadLength  := Pkt[1];
@@ -518,14 +587,15 @@ begin
   Move(Payload^, Buf, PayloadLength);
   Payload := @Buf[0];
 
+  Full_id := IntToStr(Component_id) + ':' + IntToStr(System_id);
   // Filter by drone ID
-  if EditDroneID.Items.IndexOf(IntToStr(System_id)) < 0 then
-    EditDroneID.Items.Add(IntToStr(System_id));
+  if EditDroneID.Items.IndexOf(Full_Id) < 0 then
+    EditDroneID.Items.Add(Full_Id);
   if CBDroneID.Checked then
-    id := StrToIntDef(EditDroneID.Text, 255)
+    Filter_Id := Trim(EditDroneID.Text)
   else
-    id := 255;
-  if (id <> 255) and (System_id <> id) then Exit;
+    Filter_Id := '';
+  if (Filter_Id <> '') and (Full_Id <> Filter_Id) then Exit;
 
   LastRcvTime[ConnType] := GetTickCount();
   ShowRawLog(Pkt, False);
@@ -544,7 +614,7 @@ begin
         Process_StatusText(System_id, Component_id, MessageID, TMavMsg_StatusText(Payload^));
       end;
   end;
-
+  Result := True;
 end;
 
 procedure TMainForm.Process_Serial_Control(System_id, Component_id,
@@ -597,6 +667,8 @@ begin
             begin
               Process_FTP_Resp_ReadFile(System_id, Component_id, MessageID, Msg);
             end;
+          else
+            AddLog(MemoFTPConsole, 'Done');
         end;
       end;
     MAV_FTP_NAK:
@@ -654,6 +726,7 @@ begin
       FilesTreeView.Items.AddChild(Child, sLoadingFilesList);
   end;
 
+  Node.AlphaSort();
   Node.Expand(False);
 
   RequestFileList(RequestedPath, RequestedOffset + Length(a));
@@ -785,27 +858,34 @@ begin
   end;
 end;
 
-const
-  LogColors: array[Boolean] of tColor = (clBlack, clBlue);
-
 procedure TMainForm.Send(PayloadLength, MessageID: Byte; const Payload);
 var
   Buf: TBytes;
-  id: Byte;
 begin
-  if CBDroneID.Checked then
-    id := StrToInt(EditDroneID.Text)
-  else
-    id := 255;
-  Buf := GenMavlinkPacket(PayloadLength, 0, id, 190, MessageID, Payload);
+  Buf := GenMavlinkPacket(PayloadLength, 0, 254, 190, MessageID, Payload);
   Send(Buf);
 end;
 
 procedure TMainForm.ShowRawLog(Data: TBytes; Outgoing: Boolean);
+var
+  h1: PMavMessageHeaderV1;
+  h2: PMavMessageHeaderV2;
 begin
   WriteLogF('Pkts', AnsiString(Data2Hex(Data)), AnsiString(IfThen(Outgoing, ' < ', '   ')));
   if PageControl1.ActivePage = TabRawMavlink then
+  begin
     AddLog(MemoRawMavlink, string(Data2Hex(Data, True)), LogColors[Outgoing], 100);
+    if CBRawMavlinkShowDecoded.Checked then
+    begin
+      h1 := @Data[0]; h2 := @Data[0];
+      case Data[0] of
+        Mavlink_Magic_V1:
+          AddLog(MemoRawMavlink, Format('v1 len:%d seq:%d sys:%d comp:%d msg:%d', [h1.Payload_legth, h1.Packet_sequence, h1.System_id, h1.Component_id, h1.Message_id]) , LogColors[Outgoing], 100);
+        Mavlink_Magic_V2:
+          AddLog(MemoRawMavlink, Format('v1 len:%d seq:%d sys:%d comp:%d msg:%d', [h2.Payload_legth, h2.Packet_sequence, h2.System_id, h2.Component_id, h2.Message_id]) , LogColors[Outgoing], 100);
+      end;
+    end;
+  end;
 end;
 
 procedure TMainForm.SpeedButton1Click(Sender: TObject);
@@ -877,6 +957,24 @@ begin
     BtnConnectCOM.Caption := 'Disconnect'
   else
     BtnConnectCOM.Caption := 'Connect';
+end;
+
+{ TMavlinkInspector }
+
+constructor TMavlinkInspector.Create;
+begin
+
+end;
+
+destructor TMavlinkInspector.Destroy;
+begin
+
+  inherited;
+end;
+
+procedure TMavlinkInspector.PacketRecieved;
+begin
+
 end;
 
 end.

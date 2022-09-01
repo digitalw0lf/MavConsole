@@ -3,11 +3,14 @@ unit uMavlink;
 interface
 
 uses
-  System.SysUtils,
+  System.SysUtils, Generics.Collections, Xml.XMLDoc,
 
   uUtil, uCRC;
 
 const
+  Mavlink_Magic_V1 = $FE;
+  Mavlink_Magic_V2 = $FD;
+
   MAVLINK_MSG_ID_HEARTBEAT = 0;
   MAVLINK_MSG_ID_SYS_STATUS = 1;
   MAVLINK_MSG_ID_COMMAND_LONG = 76;
@@ -57,7 +60,7 @@ const
   MAV_FTP_ERR_FileNotFound = 10;
 
 type
-  TMavMessageHeader = packed record
+  TMavMessageHeaderV1 = packed record
     Magic: Byte;
     Payload_legth: Byte;
     Packet_sequence: Byte;
@@ -65,7 +68,19 @@ type
     Component_id: Byte;
     Message_id: Byte;
   end;
-  PMavMessageHeader = ^TMavMessageHeader;
+  PMavMessageHeaderV1 = ^TMavMessageHeaderV1;
+
+  TMavMessageHeaderV2 = packed record
+    Magic: Byte;
+    Payload_legth: Byte;
+    incompat_flags, compat_flags: Byte;
+    Packet_sequence: Byte;
+    System_id: Byte;
+    Component_id: Byte;
+    Message_id: Word;
+    Message_id_3: Byte;
+  end;
+  PMavMessageHeaderV2 = ^TMavMessageHeaderV2;
 
   TMavMsg_Heartbeat = packed record
     custom_mode: Cardinal;
@@ -274,6 +289,22 @@ type
 
 function GenMavlinkPacket(PayloadLength, PacketSequence, System_id, Component_id, MessageID: Byte; const Payload): TBytes;
 
+type
+  TMavlinkMessageDefinition = class
+  public
+    Id: Integer;
+    Name, Description: string;
+  end;
+
+  TMavlinkMessageDefinitions = class
+  public
+    Messages: TObjectList<TMavlinkMessageDefinition>;
+    constructor Create();
+    destructor Destroy(); override;
+    procedure AddFromXML(const FileName: string);
+    function MessageById(Id: Integer): TMavlinkMessageDefinition;
+  end;
+
 implementation
 
 const MAVLINK_MESSAGE_CRCS: array[0..249, 0..1] of Integer = ((0, 50), (1, 124), (2, 137), (4, 237), (5, 217), (6, 104), (7, 119), (8, 117), (11, 89), (20, 214), (21, 159), (22, 220), (23, 168), (24, 24), (25, 23), (26, 170), (27, 144), (28, 67), (29, 115),
@@ -312,6 +343,34 @@ begin
          [MessageID] + MakeBytes(Payload, PayloadLength) + [crc_extra];
   crc := not CalcCRC16(@Buf[0], Length(Buf));
   Result := [$fe] + Copy(Buf, 0, Length(Buf)-1) + MakeBytes(crc, 2);
+end;
+
+{ TMavlinkMessageDefinitions }
+
+procedure TMavlinkMessageDefinitions.AddFromXML(const FileName: string);
+var
+  XML: TXMLDocument;
+begin
+  XML := TXMLDocument.Create(FileName);
+
+
+end;
+
+constructor TMavlinkMessageDefinitions.Create;
+begin
+  Messages := TObjectList<TMavlinkMessageDefinition>.Create();
+end;
+
+destructor TMavlinkMessageDefinitions.Destroy;
+begin
+  Messages.Free;
+  inherited;
+end;
+
+function TMavlinkMessageDefinitions.MessageById(
+  Id: Integer): TMavlinkMessageDefinition;
+begin
+
 end;
 
 end.
