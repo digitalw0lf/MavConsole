@@ -29,7 +29,7 @@ object MainForm: TMainForm
     Top = 97
     Width = 747
     Height = 531
-    ActivePage = TabFiles
+    ActivePage = TabRawMavlink
     Align = alClient
     TabOrder = 0
     object TabConsole: TTabSheet
@@ -115,6 +115,21 @@ object MainForm: TMainForm
         Height = 41
         Align = alTop
         TabOrder = 1
+        object Gauge1: TGauge
+          Left = 296
+          Top = 12
+          Width = 153
+          Height = 17
+          ForeColor = clLime
+          Progress = 0
+        end
+        object LblDownloadProgress: TLabel
+          Left = 456
+          Top = 14
+          Width = 12
+          Height = 13
+          Caption = '...'
+        end
         object BtnFTPRefresh: TButton
           Left = 8
           Top = 8
@@ -142,6 +157,15 @@ object MainForm: TMainForm
           TabOrder = 2
           OnClick = BtnFTPDeleteClick
         end
+        object BtnFTPAbort: TButton
+          Left = 640
+          Top = 8
+          Width = 75
+          Height = 25
+          Caption = 'Abort'
+          TabOrder = 3
+          OnClick = BtnFTPAbortClick
+        end
       end
       object MemoFTPConsole: TRichEdit
         Left = 0
@@ -164,10 +188,6 @@ object MainForm: TMainForm
     object TabMavlinkInspector: TTabSheet
       Caption = 'Mavlink Inspector'
       ImageIndex = 3
-      ExplicitLeft = 0
-      ExplicitTop = 0
-      ExplicitWidth = 0
-      ExplicitHeight = 0
       object ListView1: TListView
         Left = 0
         Top = 0
@@ -197,9 +217,9 @@ object MainForm: TMainForm
       ImageIndex = 2
       object MemoRawMavlink: TRichEdit
         Left = 0
-        Top = 0
+        Top = 41
         Width = 739
-        Height = 432
+        Height = 391
         Align = alClient
         Font.Charset = RUSSIAN_CHARSET
         Font.Color = clWindowText
@@ -211,6 +231,8 @@ object MainForm: TMainForm
         TabOrder = 0
         WordWrap = False
         Zoom = 100
+        ExplicitTop = 0
+        ExplicitHeight = 432
       end
       object Panel3: TPanel
         Left = 0
@@ -283,17 +305,85 @@ object MainForm: TMainForm
           Text = '0'
           Visible = False
         end
-        object CBRawMavlinkShowDecoded: TCheckBox
-          Left = 534
-          Top = 41
+      end
+      object Panel8: TPanel
+        Left = 0
+        Top = 0
+        Width = 739
+        Height = 41
+        Align = alTop
+        TabOrder = 2
+        ExplicitLeft = 232
+        ExplicitTop = 24
+        ExplicitWidth = 185
+        object LblPktsPerSecond: TLabel
+          Left = 646
+          Top = 8
+          Width = 84
+          Height = 13
+          Alignment = taRightJustify
+          Caption = 'LblPktsPerSecond'
+        end
+        object CBRawMavlinkShowIn: TCheckBox
+          Left = 8
+          Top = 8
           Width = 97
           Height = 17
-          Anchors = [akTop, akRight]
+          Caption = 'Show IN msgs'
+          TabOrder = 0
+        end
+        object CBRawMavlinkShowDecoded: TCheckBox
+          Left = 111
+          Top = 8
+          Width = 97
+          Height = 17
           Caption = 'Show decoded'
           Checked = True
           State = cbChecked
-          TabOrder = 5
+          TabOrder = 1
         end
+      end
+    end
+    object TabMotorTest: TTabSheet
+      Caption = 'TabMotorTest'
+      ImageIndex = 4
+      object LblMotorThro: TLabel
+        Left = 16
+        Top = 352
+        Width = 6
+        Height = 13
+        Caption = '0'
+      end
+      object TrackBar1: TTrackBar
+        Left = 16
+        Top = 40
+        Width = 45
+        Height = 297
+        Max = 100
+        Orientation = trVertical
+        PageSize = 10
+        Position = 100
+        TabOrder = 0
+        OnChange = TrackBar1Change
+      end
+      object CBMotorTestEnable: TCheckBox
+        Left = 16
+        Top = 384
+        Width = 145
+        Height = 17
+        Caption = 'Enable motor test'
+        TabOrder = 1
+        OnClick = CBMotorTestEnableClick
+      end
+      object MemoPwrStatus: TMemo
+        Left = 120
+        Top = 48
+        Width = 185
+        Height = 89
+        Lines.Strings = (
+          'MemoPwrStatus')
+        ReadOnly = True
+        TabOrder = 2
       end
     end
   end

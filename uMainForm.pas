@@ -8,7 +8,7 @@ uses
   IdBaseComponent, IdComponent, IdUDPBase, IdUDPClient, IdGlobal, IdUDPServer,
   IdSocketHandle, System.Math, System.StrUtils, Vcl.Buttons, Generics.Collections,
 
-  uMavlink, uRS485Protocol, uUtil, uLogFile;
+  uMavlink, uRS485Protocol, uUtil, uLogFile, Vcl.Samples.Gauges;
 
 type
   TFileTreeNode = class (TTreeNode)
@@ -16,6 +16,41 @@ type
     Path: string;
     Dir: Boolean;
     Size: Integer;
+  end;
+
+  TMavFTPClient = class
+  private type
+    TFileRange = record
+      AStart, AEnd: Cardinal;
+    end;
+  private
+    LastRcvTicks, LastSendTicks: Cardinal;
+    procedure AddLog(Text: string; Color: TColor = clNone; MaxLines: Integer = -1);
+    procedure Send(PayloadLength, MessageID: Byte; const Payload); overload;
+    function RequestNextReadPortion(): Boolean;
+    procedure AddReceivedPortion(AStart, AEnd: Cardinal);
+  public
+    RequestedPath: string;
+    SavingFileTo: string;
+    ExpectedFileSize: Cardinal;
+    RequestedOffset: Integer;
+    FTP_seq_number: Word;
+    FTP_session: Byte;
+    ReceivedRanges: TList<TFileRange>;
+    procedure Process_File_Transfer_Protocol(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+    procedure Process_FTP_Resp_ListDirectory(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+    procedure Process_FTP_Resp_OpenFileRO(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+    procedure Process_FTP_Resp_ReadFile(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+    procedure Process_FTP_Resp_BurstReadFile(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+    procedure RequestFileList(const Path: string; Offset: Integer);
+    procedure RequestFileRead(Offset, Size: Integer);
+    procedure DeleteFile(const Path: string; IsDirectory: Boolean);
+    procedure DownloadFile(const Path, SaveTo: string);
+    procedure AbortOperation();
+    function NewFTPPacket(): TMavMsg_File_Transfer_protocol;
+    constructor Create();
+    destructor Destroy(); override;
+    procedure OnTimer();
   end;
 
   TMavlinkInspectorItem = record
@@ -51,6 +86,17 @@ type
     ImgUDPServerInfo: TImage;
     TabMavlinkInspector: TTabSheet;
     ListView1: TListView;
+    Gauge1: TGauge;
+    LblDownloadProgress: TLabel;
+    BtnFTPAbort: TButton;
+    TabMotorTest: TTabSheet;
+    TrackBar1: TTrackBar;
+    LblMotorThro: TLabel;
+    CBMotorTestEnable: TCheckBox;
+    MemoPwrStatus: TMemo;
+    Panel8: TPanel;
+    CBRawMavlinkShowIn: TCheckBox;
+    LblPktsPerSecond: TLabel;
     CBRawMavlinkShowDecoded: TCheckBox;
     procedure SpeedButton1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
@@ -59,6 +105,9 @@ type
     procedure ImgUDPServerInfoMouseMove(Sender: TObject; Shift: TShiftState; X,
       Y: Integer);
     procedure FormDestroy(Sender: TObject);
+    procedure BtnFTPAbortClick(Sender: TObject);
+    procedure TrackBar1Change(Sender: TObject);
+    procedure CBMotorTestEnableClick(Sender: TObject);
   public type
     TConnType = (ctNone, ctUDPClient, ctUDPServer, ctCOMPort);
   published
@@ -126,31 +175,24 @@ type
     InputBuf: TBytes;
     PeerIP: string;
     PeerPort: Integer;
-    RequestedPath: string;
-    SavingFileTo: string;
-    RequestedOffset: Integer;
-    FTP_seq_number: Word;
-    FTP_session: Byte;
+    MavFTPClient: TMavFTPClient;
     procedure AddLog(Memo: TRichEdit; Text: string; Color: TColor = clNone; MaxLines: Integer = -1);
     procedure ShowRawLog(Data: TBytes; Outgoing: Boolean);
     function ProcessInputBytes(ConnType: TConnType; const Data; Size: integer): Boolean;
     function ProcessPacket(ConnType: TConnType; const Pkt: TBytes): Boolean;
     procedure Process_Serial_Control(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_Serial_Control);
-    procedure Process_File_Transfer_Protocol(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
-    procedure Process_FTP_Resp_ListDirectory(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
-    procedure Process_FTP_Resp_OpenFileRO(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
-    procedure Process_FTP_Resp_ReadFile(System_id, Component_id, MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
     procedure Process_StatusText(System_id, Component_id, MessageID: Byte;
       const Msg: TMavMsg_StatusText);
+    procedure Process_Sys_Status(System_id, Component_id, MessageID: Byte;
+      const Msg: TMavMsg_Sys_Status);
     procedure UpdateStateUI();
-    procedure RequestFileList(const Path: string; Offset: Integer);
-    procedure RequestFileRead(Offset: Integer);
-    function NewFTPPacket(): TMavMsg_File_Transfer_protocol;
     function ConnIndicatorColor(ConnType: TConnType): TColor;
+    procedure SendConsoleCmd(const Text: string);
   public
     { Public declarations }
     ComStream: THandleStream;
     LastRcvTime: array[TConnType] of Cardinal;
+    ReceivedPkts: Integer;  // In last second
     InspectorItems: TList<TMavlinkInspectorItem>;
     procedure RefreshComList();
     procedure EnsureConnected();
@@ -202,8 +244,6 @@ end;
 
 procedure TMainForm.BtnConsoleSendClick(Sender: TObject);
 var
-  Msg: TMavMsg_Serial_Control;
-  s: AnsiString;
   ws: string;
 begin
   EnsureConnected();
@@ -214,15 +254,7 @@ begin
   else
     EditConsoleCommand.Items.Insert(0, ws);
 
-  s := AnsiString(ws) + AnsiChar(#10);
-
-  FillChar(Msg, SizeOf(Msg), 0);
-  Msg.device := 10;  // Shell
-  Msg.flags := 22;   // Respond Exclusive Multi
-  Msg.count := Length(s);
-  Move(s[Low(s)], Msg.data, Length(s));
-
-  Send(SizeOf(Msg), MAVLINK_MSG_ID_SERIAL_CONTROL, Msg);
+  SendConsoleCmd(ws);
 
   EditConsoleCommand.Text := '';
 end;
@@ -237,36 +269,26 @@ begin
   MemoStatusText.Lines.Clear();
 end;
 
+procedure TMainForm.BtnFTPAbortClick(Sender: TObject);
+begin
+  MavFTPClient.AbortOperation();
+end;
+
 procedure TMainForm.BtnFTPDeleteClick(Sender: TObject);
 var
   FNode: TFileTreeNode;
-  Msg: TMavMsg_File_Transfer_protocol;
-  s: AnsiString;
 begin
   if FilesTreeView.Selected = nil then Exit;
   FNode := FilesTreeView.Selected as TFileTreeNode;
 
   if Application.MessageBox(PChar('Delete ' + FNode.Path + ' ?'), 'Delete', MB_OKCANCEL) <> IDOK then Exit;
 
-  Msg := NewFTPPacket();
-  if FNode.Dir then
-    Msg.payload.opcode := MAV_FTP_RemoveDirectory
-  else
-    Msg.payload.opcode := MAV_FTP_RemoveFile;
-
-  s := AnsiString(FNode.Path);
-  Msg.payload.size := Length(s);
-  Move(s[1], Msg.payload.data[0], Length(s));
-
-  AddLog(MemoFTPConsole, 'Deleting ' + FNode.Path + '...');
-  Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
+  MavFTPClient.DeleteFile(FNode.Path, FNode.Dir);
 end;
 
 procedure TMainForm.BtnFTPDownloadClick(Sender: TObject);
 var
   FNode: TFileTreeNode;
-  Msg: TMavMsg_File_Transfer_protocol;
-  s: AnsiString;
 begin
   if FilesTreeView.Selected = nil then Exit;
   FNode := FilesTreeView.Selected as TFileTreeNode;
@@ -275,16 +297,9 @@ begin
 
   SaveDialog1.FileName := FNode.Text;
   if not SaveDialog1.Execute() then Exit;
-  SavingFileTo := SaveDialog1.FileName;
 
-  Msg := NewFTPPacket();
-  Msg.payload.opcode := MAV_FTP_OpenFileRO;
-  s := AnsiString(FNode.Path);
-  Msg.payload.size := Length(s);
-  Move(s[1], Msg.payload.data[0], Length(s));
+  MavFTPClient.DownloadFile(FNode.Path, SaveDialog1.FileName);
 
-  AddLog(MemoFTPConsole, 'Downloading ' + FNode.Path + '...');
-  Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
 end;
 
 procedure TMainForm.BtnFTPRefreshClick(Sender: TObject);
@@ -317,6 +332,12 @@ end;
 procedure TMainForm.Button3Click(Sender: TObject);
 begin
   MemoRawMavlink.Lines.Clear;
+end;
+
+procedure TMainForm.CBMotorTestEnableClick(Sender: TObject);
+begin
+  TrackBar1.Position := 100;  // Inverted
+  TrackBar1Change(Sender);
 end;
 
 procedure TMainForm.Connect(ConnType: TConnType);
@@ -445,19 +466,21 @@ procedure TMainForm.FilesTreeViewExpanded(Sender: TObject; Node: TTreeNode);
 begin
   if (Node.Count = 1) and (Node.Item[0].Text = sLoadingFilesList) then
   begin
-    RequestFileList(string(GetNodePath(Node, True)).Replace('\','/'), 0);
+    MavFTPClient.RequestFileList(string(GetNodePath(Node, True)).Replace('\','/'), 0);
   end;
 end;
 
 procedure TMainForm.FormCreate(Sender: TObject);
 begin
   InspectorItems := TList<TMavlinkInspectorItem>.Create();
+  MavFTPClient := TMavFTPClient.Create();
   IdUDPServer1.OnUDPRead:=IdUDPServer1UDPRead;
   PageControl1.ActivePageIndex := 0;
 end;
 
 procedure TMainForm.FormDestroy(Sender: TObject);
 begin
+  MavFTPClient.Free;
   InspectorItems.Free;
 end;
 
@@ -475,6 +498,9 @@ procedure TMainForm.HBTimerTimer(Sender: TObject);
 var
   Msg: TMavMsg_Heartbeat;
 begin
+  LblPktsPerSecond.Caption := IntToStr(ReceivedPkts) + ' pkts/sec';
+  ReceivedPkts := 0;
+
   if not CBSendHeartbeats.Checked then Exit;
   if not (Connected(ctUDPClient) or Connected(ctUDPServer) or Connected(ctCOMPort)) then Exit;
 
@@ -504,16 +530,110 @@ begin
   ImgUDPServerInfo.ShowHint := True;
 end;
 
-function TMainForm.NewFTPPacket: TMavMsg_File_Transfer_protocol;
+procedure TMavFTPClient.AbortOperation;
+begin
+  SavingFileTo := '';
+end;
+
+procedure TMavFTPClient.AddLog(Text: string; Color: TColor; MaxLines: Integer);
+begin
+  MainForm.AddLog(MainForm.MemoFTPConsole, Text, Color, MaxLines);
+end;
+
+procedure TMavFTPClient.AddReceivedPortion(AStart, AEnd: Cardinal);
+var
+  i: Integer;
+  Range: TFileRange;
+begin
+  // Insert
+  Range.AStart := AStart;
+  Range.AEnd := AEnd;
+  i := ReceivedRanges.Count;
+  while (i > 0) and (ReceivedRanges[i-1].AStart > AStart) do
+    Dec(i);
+  ReceivedRanges.Insert(i, Range);
+
+  // Merge with neighbors
+  for i := ReceivedRanges.Count - 2 downto 0 do
+  begin
+    if ReceivedRanges[i].AEnd >= ReceivedRanges[i+1].AStart then
+    begin
+      Range.AStart := Min(ReceivedRanges[i].AStart, ReceivedRanges[i+1].AStart);
+      Range.AEnd := Max(ReceivedRanges[i].AEnd, ReceivedRanges[i+1].AEnd);
+      ReceivedRanges.Delete(i+1);
+      ReceivedRanges[i] := Range;
+    end;
+  end;
+end;
+
+constructor TMavFTPClient.Create;
+begin
+  ReceivedRanges := TList<TFileRange>.Create();
+end;
+
+procedure TMavFTPClient.DeleteFile(const Path: string; IsDirectory: Boolean);
+var
+  Msg: TMavMsg_File_Transfer_protocol;
+  s: AnsiString;
+begin
+  Msg := NewFTPPacket();
+  if IsDirectory then
+    Msg.payload.opcode := MAV_FTP_RemoveDirectory
+  else
+    Msg.payload.opcode := MAV_FTP_RemoveFile;
+
+  s := AnsiString(Path);
+  Msg.payload.size := Length(s);
+  Move(s[1], Msg.payload.data[0], Length(s));
+
+  AddLog('Deleting ' + Path + '...');
+  Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
+end;
+
+destructor TMavFTPClient.Destroy;
+begin
+  ReceivedRanges.Free;
+  inherited;
+end;
+
+procedure TMavFTPClient.DownloadFile(const Path, SaveTo: string);
+var
+  Msg: TMavMsg_File_Transfer_protocol;
+  s: AnsiString;
+begin
+  SavingFileTo := SaveTo;
+  System.SysUtils.DeleteFile(SaveTo);
+  ReceivedRanges.Clear();
+  ExpectedFileSize := 0;
+  LastRcvTicks := GetTickCount();
+
+  Msg := NewFTPPacket();
+  Msg.payload.opcode := MAV_FTP_OpenFileRO;
+  s := AnsiString(Path);
+  Msg.payload.size := Length(s);
+  Move(s[1], Msg.payload.data[0], Length(s));
+
+  AddLog('Downloading ' + Path + '...');
+  Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
+end;
+
+function TMavFTPClient.NewFTPPacket: TMavMsg_File_Transfer_protocol;
 begin
   FillChar(Result, SizeOf(Result), 0);
   Result.target_network := 0;
-  Result.target_system := 1;
+  Result.target_system := 0;
   Result.target_component := 0;
 
   Inc(FTP_seq_number);
   Result.payload.seq_number := FTP_seq_number;
   Result.payload.session := FTP_session;
+end;
+
+procedure TMavFTPClient.OnTimer;
+begin
+  if (SavingFileTo <> '') and (ExpectedFileSize > 0) and
+     (GetTickCount() - LastRcvTicks > 500) and (GetTickCount() - LastSendTicks > 500) then
+    RequestNextReadPortion();
 end;
 
 function TMainForm.ProcessInputBytes(ConnType: TConnType; const Data; Size: integer): Boolean;
@@ -598,6 +718,7 @@ begin
   if (Filter_Id <> '') and (Full_Id <> Filter_Id) then Exit;
 
   LastRcvTime[ConnType] := GetTickCount();
+  Inc(ReceivedPkts);
   ShowRawLog(Pkt, False);
 
   case MessageID of
@@ -607,11 +728,15 @@ begin
       end;
     MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL:
       begin
-        Process_File_Transfer_Protocol(System_id, Component_id, MessageID, TMavMsg_File_Transfer_protocol(Payload^));
+        MavFTPClient.Process_File_Transfer_Protocol(System_id, Component_id, MessageID, TMavMsg_File_Transfer_protocol(Payload^));
       end;
     MAVLINK_MSG_ID_STATUSTEXT:
       begin
         Process_StatusText(System_id, Component_id, MessageID, TMavMsg_StatusText(Payload^));
+      end;
+    MAVLINK_MSG_ID_SYS_STATUS:
+      begin
+        Process_Sys_Status(System_id, Component_id, MessageID, TMavMsg_Sys_Status(Payload^));
       end;
   end;
   Result := True;
@@ -645,12 +770,13 @@ begin
 end;
 
 
-procedure TMainForm.Process_File_Transfer_Protocol(System_id, Component_id,
+procedure TMavFTPClient.Process_File_Transfer_Protocol(System_id, Component_id,
   MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
 var
   Err: Byte;
-  Msg2: TMavMsg_File_Transfer_protocol;
 begin
+  LastRcvTicks := GetTickCount();
+
   case Msg.payload.opcode of
     MAV_FTP_ACK:
       begin
@@ -667,8 +793,12 @@ begin
             begin
               Process_FTP_Resp_ReadFile(System_id, Component_id, MessageID, Msg);
             end;
+          MAV_FTP_BurstReadFile:
+            begin
+              Process_FTP_Resp_BurstReadFile(System_id, Component_id, MessageID, Msg);
+            end;
           else
-            AddLog(MemoFTPConsole, 'Done');
+            AddLog('Done');
         end;
       end;
     MAV_FTP_NAK:
@@ -678,22 +808,61 @@ begin
         begin
           RequestedPath := '';
         end
+//        else
+//        if ((Msg.payload.req_opcode = MAV_FTP_ReadFile)) and
+//           (Err = MAV_FTP_ERR_EOF) and (SavingFileTo <> '') then
+//        begin
+//          AddLog('Saved to ' + SavingFileTo);
+//          SavingFileTo := '';
+//          Msg2 := NewFTPPacket();
+//          Msg2.payload.opcode := MAV_FTP_TerminateSession;
+//          Send(SizeOf(Msg2), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg2);
+//        end
         else
-        if (Msg.payload.req_opcode = MAV_FTP_ReadFile) and (Err = MAV_FTP_ERR_EOF) and (SavingFileTo <> '') then
+        if (Msg.payload.req_opcode = MAV_FTP_BurstReadFile) and
+           (Err = MAV_FTP_ERR_EOF) and (SavingFileTo <> '') then
         begin
-          AddLog(MemoFTPConsole, 'Saved to ' + SavingFileTo);
-          SavingFileTo := '';
-          Msg2 := NewFTPPacket();
-          Msg2.payload.opcode := MAV_FTP_TerminateSession;
-          Send(SizeOf(Msg2), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg2);
+          RequestNextReadPortion();
         end
         else
-          AddLog(MemoFTPConsole, 'ERROR: ' + IntToStr(Err));
+          AddLog('ERROR: ' + IntToStr(Err));
+      end;
+    MAV_FTP_BurstReadFile:
+      begin
+        Process_FTP_Resp_BurstReadFile(System_id, Component_id, MessageID, Msg);
       end;
   end;
 end;
 
-procedure TMainForm.Process_FTP_Resp_ListDirectory(System_id, Component_id,
+procedure TMavFTPClient.Process_FTP_Resp_BurstReadFile(System_id, Component_id,
+  MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
+var
+  fs: TFileStream;
+  Done: Integer;
+begin
+  if SavingFileTo = '' then Exit;
+
+  fs := TFileStream.Create(SavingFileTo, IfThen(FileExists(SavingFileTo), fmOpenReadWrite, fmCreate));
+  try
+    fs.Seek(Msg.payload.offset, soBeginning);
+    fs.WriteBuffer(Msg.payload.data, Msg.payload.size);
+  finally
+    fs.Free;
+  end;
+
+  AddReceivedPortion(Msg.payload.offset, Msg.payload.offset + Msg.payload.size);
+
+  //AddLog(MemoFTPConsole, IntToStr(Msg.payload.offset + Msg.payload.size) + ' bytes done');
+  Done := ReceivedRanges.Last.AEnd;
+  if ExpectedFileSize > 0 then
+    MainForm.Gauge1.Progress := Round(Done / ExpectedFileSize * 100);
+  MainForm.LblDownloadProgress.Caption := Format('%d KB / %d KB', [Done div 1024, ExpectedFileSize div 1024]);
+
+  if Msg.payload.burst_complete <> 0 then
+    RequestNextReadPortion();
+end;
+
+procedure TMavFTPClient.Process_FTP_Resp_ListDirectory(System_id, Component_id,
   MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
 var
   Node, Child: TFileTreeNode;
@@ -703,7 +872,7 @@ var
   a: TArray<string>;
   Dir: Boolean;
 begin
-  Node := GetTreeNode(FilesTreeView, AnsiString(RequestedPath.Replace('/', '\')), False, '/') as TFileTreeNode;
+  Node := GetTreeNode(MainForm.FilesTreeView, AnsiString(RequestedPath.Replace('/', '\')), False, '/') as TFileTreeNode;
   if Node = nil then Exit;
   if RequestedOffset = 0 then
     Node.DeleteChildren();
@@ -718,12 +887,12 @@ begin
     Delete(a[i], 1, 1);
     Name := GetNextWord(a[i], #9);
 
-    Child := FilesTreeView.Items.AddChild(Node, Name) as TFileTreeNode;
+    Child := MainForm.FilesTreeView.Items.AddChild(Node, Name) as TFileTreeNode;
     Child.Path := RequestedPath + '/' + Name;
     Child.Dir := Dir;
     Child.Size := StrToIntDef(a[i], -1);
     if Dir then
-      FilesTreeView.Items.AddChild(Child, sLoadingFilesList);
+      MainForm.FilesTreeView.Items.AddChild(Child, sLoadingFilesList);
   end;
 
   Node.AlphaSort();
@@ -732,35 +901,38 @@ begin
   RequestFileList(RequestedPath, RequestedOffset + Length(a));
 end;
 
-procedure TMainForm.Process_FTP_Resp_OpenFileRO(System_id, Component_id,
+procedure TMavFTPClient.Process_FTP_Resp_OpenFileRO(System_id, Component_id,
   MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
 //var
 //  Size: Integer;
 begin
   FTP_session := Msg.payload.session;
   //Size := PInteger(@Msg.payload.data[0])^;
+  ExpectedFileSize := PInteger(@Msg.payload.data[0])^;
+//  ReceivedPtr := 0;
 
-  RequestFileRead(0);
+//  RequestFileRead(0);
+  RequestNextReadPortion();
 end;
 
-procedure TMainForm.Process_FTP_Resp_ReadFile(System_id, Component_id,
+procedure TMavFTPClient.Process_FTP_Resp_ReadFile(System_id, Component_id,
   MessageID: Byte; const Msg: TMavMsg_File_Transfer_protocol);
-var
-  fs: TFileStream;
+//var
+//  fs: TFileStream;
 begin
-  if SavingFileTo = '' then Exit;
-
-  AddLog(MemoFTPConsole, IntToStr(RequestedOffset + Msg.payload.size) + ' bytes done');
-
-  fs := TFileStream.Create(SavingFileTo, IfThen(RequestedOffset = 0, fmCreate, fmOpenReadWrite));
-  try
-    fs.Seek(RequestedOffset, soBeginning);
-    fs.WriteBuffer(Msg.payload.data, Msg.payload.size);
-  finally
-    fs.Free;
-  end;
-
-  RequestFileRead(RequestedOffset + Msg.payload.size);
+//  if SavingFileTo = '' then Exit;
+//
+//  AddLog(IntToStr(RequestedOffset + Msg.payload.size) + ' bytes done');
+//
+//  fs := TFileStream.Create(SavingFileTo, IfThen(RequestedOffset = 0, fmCreate, fmOpenReadWrite));
+//  try
+//    fs.Seek(RequestedOffset, soBeginning);
+//    fs.WriteBuffer(Msg.payload.data, Msg.payload.size);
+//  finally
+//    fs.Free;
+//  end;
+//
+//  RequestFileRead(RequestedOffset + Msg.payload.size);
 end;
 
 procedure TMainForm.Process_StatusText(System_id, Component_id,
@@ -791,6 +963,17 @@ begin
   ShowMemoCaret(MemoStatusText, True);
 end;
 
+procedure TMainForm.Process_Sys_Status(System_id, Component_id, MessageID: Byte;
+  const Msg: TMavMsg_Sys_Status);
+var
+  s: string;
+begin
+  s := Format('V: %.2f' + sLineBreak +
+              'A: %.2f' + sLineBreak +
+              'P: %.2f' + sLineBreak , [Msg.voltage_battery / 1000, Msg.current_battery / 1000, Msg.voltage_battery / 1000 * Msg.current_battery / 1000 ]);
+  MemoPwrStatus.Text := s;
+end;
+
 procedure TMainForm.RefreshComList;
 begin
   GetAvailableComPorts(EditCOMName.Items);
@@ -798,7 +981,7 @@ begin
     EditCOMName.Text := EditCOMName.Items[0];
 end;
 
-procedure TMainForm.RequestFileList(const Path: string; Offset: Integer);
+procedure TMavFTPClient.RequestFileList(const Path: string; Offset: Integer);
 var
   Msg: TMavMsg_File_Transfer_protocol;
   s: AnsiString;
@@ -816,17 +999,81 @@ begin
   Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
 end;
 
-procedure TMainForm.RequestFileRead(Offset: Integer);
+procedure TMavFTPClient.RequestFileRead(Offset, Size: Integer);
+//const
+//  BURST_READ_SIZE = 50000;
 var
   Msg: TMavMsg_File_Transfer_protocol;
 begin
+  AddLog('Req ' + IntToStr(Offset) + ' ' + IntToStr(Size));
+
   Msg := NewFTPPacket();
-  Msg.payload.opcode := MAV_FTP_ReadFile;
-  Msg.payload.size := Length(Msg.payload.data);
+//  Msg.payload.opcode := MAV_FTP_ReadFile;
+//  Msg.payload.size := Length(Msg.payload.data);
+//  Msg.payload.offset := Offset;
+  Msg.payload.opcode := MAV_FTP_BurstReadFile;
+  Msg.payload.size := 4;
   Msg.payload.offset := Offset;
+  PCardinal(@Msg.payload.data)^ := Size; //BURST_READ_SIZE;
+
   RequestedOffset := Offset;
 
   Send(SizeOf(Msg), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg);
+end;
+
+function TMavFTPClient.RequestNextReadPortion(): Boolean;
+// Returns False if all received
+const
+  BURST_READ_SIZE = 50000;
+var
+  Offset, Size: Cardinal;
+  Msg2: TMavMsg_File_Transfer_protocol;
+begin
+  if SavingFileTo = '' then Exit(False);
+
+  if (ExpectedFileSize = 0) or
+     ((ReceivedRanges.Count = 1) and (ReceivedRanges[0].AStart = 0) and
+      (ReceivedRanges[0].AEnd = ExpectedFileSize)) then
+  begin
+    AddLog('Saved to ' + SavingFileTo);
+    SavingFileTo := '';
+    Msg2 := NewFTPPacket();
+    Msg2.payload.opcode := MAV_FTP_TerminateSession;
+    Send(SizeOf(Msg2), MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL, Msg2);
+    Exit(False);
+  end;
+
+  if ReceivedRanges.Count = 0 then
+  begin
+    Offset := 0;
+    Size := Min(BURST_READ_SIZE, ExpectedFileSize);
+  end
+  else
+  if ReceivedRanges[0].AStart > 0 then
+  begin
+    Offset := 0;
+    Size := ReceivedRanges[0].AStart;
+  end
+  else
+  if ReceivedRanges.Count = 1 then
+  begin
+    Offset := ReceivedRanges[0].AEnd;
+    Size := Min(BURST_READ_SIZE, ExpectedFileSize - Offset);
+  end
+  else
+  begin
+    Offset := ReceivedRanges[0].AEnd;
+    Size := ReceivedRanges[1].AStart - ReceivedRanges[0].AEnd;
+  end;
+
+  RequestFileRead(Offset, Size);
+  Result := True;
+end;
+
+procedure TMavFTPClient.Send(PayloadLength, MessageID: Byte; const Payload);
+begin
+  LastSendTicks := GetTickCount();
+  MainForm.Send(PayloadLength, MessageID, Payload);
 end;
 
 procedure TMainForm.Send(const Pkt: TBytes);
@@ -866,13 +1113,32 @@ begin
   Send(Buf);
 end;
 
+procedure TMainForm.SendConsoleCmd(const Text: string);
+var
+  Msg: TMavMsg_Serial_Control;
+  s: AnsiString;
+begin
+
+  s := AnsiString(Text);
+  if not EndsStr(#10, Text) then
+    s := s + AnsiChar(#10);
+
+  FillChar(Msg, SizeOf(Msg), 0);
+  Msg.device := 10;  // Shell
+  Msg.flags := 22;   // Respond Exclusive Multi
+  Msg.count := Length(s);
+  Move(s[Low(s)], Msg.data, Length(s));
+
+  Send(SizeOf(Msg), MAVLINK_MSG_ID_SERIAL_CONTROL, Msg);
+end;
+
 procedure TMainForm.ShowRawLog(Data: TBytes; Outgoing: Boolean);
 var
   h1: PMavMessageHeaderV1;
   h2: PMavMessageHeaderV2;
 begin
   WriteLogF('Pkts', AnsiString(Data2Hex(Data)), AnsiString(IfThen(Outgoing, ' < ', '   ')));
-  if PageControl1.ActivePage = TabRawMavlink then
+  if (PageControl1.ActivePage = TabRawMavlink) and (CBRawMavlinkShowIn.Checked) then
   begin
     AddLog(MemoRawMavlink, string(Data2Hex(Data, True)), LogColors[Outgoing], 100);
     if CBRawMavlinkShowDecoded.Checked then
@@ -923,6 +1189,36 @@ begin
         Break;
     end;
   end;
+
+  MavFTPClient.OnTimer();
+end;
+
+procedure TMainForm.TrackBar1Change(Sender: TObject);
+var
+  p: Integer;
+//  Msg: TMavMsg_Command_Long;
+begin
+  if not CBMotorTestEnable.Checked then Exit;
+  EnsureConnected();
+
+  p := 100 - TrackBar1.Position;
+  LblMotorThro.Caption := IntToStr(p) + ' %';
+
+//  FillChar(Msg, SizeOf(Msg), 0);
+//  Msg.command := MAV_CMD_DO_MOTOR_TEST;
+//  Msg.target_system := 1;
+//  Msg.target_component := 0;
+//  Msg.param1 := 1; // motor index
+//  Msg.param2 := 0;
+//  Msg.param3 := p;
+//  Msg.param4 := 0;//3;
+//  Msg.param5 := 0;
+//  Msg.param6 := 2;
+//  Msg.param7 := 0;
+//
+//  Send(SizeOf(Msg), MAVLINK_MSG_ID_COMMAND_LONG, Msg);
+
+  SendConsoleCmd('c' + #10 + 'pwm test -c 1 -p ' + IntToStr(1000 + 10 * p) + #10);
 end;
 
 function TMainForm.ConnIndicatorColor(ConnType: TConnType): TColor;
